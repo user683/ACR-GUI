@@ -1,0 +1,1 @@
+source /APP/u22/ai_x86/toolshs/setproxy.sh 172.16.31.200 3138
