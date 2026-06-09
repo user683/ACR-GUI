@@ -19,6 +19,7 @@ gui_data_process/processed/
 dataset/
 data/raw_hf/
 data/raw_modelscope/
+dataset_rico_train_500.yaml
 
 # ============================================================
 # Training outputs
