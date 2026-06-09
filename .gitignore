@@ -20,6 +20,7 @@ dataset/
 data/raw_hf/
 data/raw_modelscope/
 dataset_rico_train_500.yaml
+example_training_json.json
 
 # ============================================================
 # Training outputs
