@@ -1,116 +1,145 @@
-<h1 align="center">ACR-GUI</h1>
+# ACR-GUI
 
-<p align="center">
-  <em>Anchor-collapse regularized continual GUI grounding</em>
-</p>
+Anchor-Collapse Regularized Continual GUI Grounding.
 
-<p align="center">
-  <a href="https://arxiv.org/abs/2601.20732"><img src="https://img.shields.io/badge/Paper-Arxiv-red"></a>
-  <a href="https://github.com/xavierliu34/GUI-AiF"><img src="https://img.shields.io/badge/Code-GitHub-black"></a>
-</p>
+ACR-GUI targets continual GUI grounding, where a model receives a stream of GUI domains and must adapt to the current domain while preserving grounding ability on previous domains. The core failure mode addressed here is anchor collapse: predictions on old domains drift toward a few frequent centers, scales, or layout zones after training on new domains.
 
-<hr>
+## Method
 
-<p align="center">
-  <img src="assets/arch_01.png"  width="80%">
-</p>
+ACR-GUI represents each predicted box as an anchor tuple:
 
-<p align="center">
-  <em>ACR-GUI augments GUI-G<sup>2</sup> style GRPO grounding with a continual grounding memory. It retrieves context-compatible historical instruction-anchor mappings and regularizes candidate boxes with point, size, and layout-zone rewards to reduce anchor collapse across domain streams.</em>
-</p>
+```text
+anchor = (center, size, layout_zone)
+```
 
-## Motivation
+The training reward uses a continual grounding memory. The memory stores compact instruction-anchor records rather than raw historical images:
 
-<p align="center">
-  <img src="assets/guicl_01.png" alt="Motivation Chart" width="65%">
-</p>
+```text
+instruction, bbox, center, size, layout_zone, context_text, element_type, domain, confidence
+```
 
-Continual GUI Agents operate under evolving scenarios: domain-in-flux (e.g., from Mobile OS to Web OS) and resolution-in-flux (e.g., scaling from 1080p to 4K).
+During training, ACR-GUI loads old memory as a read-only anchor bank. For each generated candidate box, it retrieves context-compatible historical anchors and computes:
 
-ACR-GUI targets a spatial failure mode in continual GUI grounding: after adapting to new domains, old-domain predictions can collapse toward a few frequent centers, scales, or layout zones even when the instruction semantics remain understandable. The method stores high-confidence historical anchors rather than raw images, then gates the anchor reward by retrieval similarity and memory confidence to avoid negative transfer.
+```text
+R_anchor = eta_point * R_hist_point
+         + eta_size  * R_hist_size
+         + eta_zone  * R_hist_zone
+```
+
+The final reward used by continual GRPO is:
+
+```text
+R = lambda_acr * R_anchor
+```
+
+Retrieval is gated by semantic similarity and memory confidence. Context reweighting uses instruction text, optional target/context text, optional element type, predicted layout zone, and domain.
+
+After the current training stream finishes, ACR-GUI writes the current domain anchors back to the memory bank. The next training run can then use that updated memory as historical grounding experience.
+
+## Repository Layout
+
+```text
+run_continual.sh                         continual ACR-GUI training entry
+src/gui-aif/src/open_r1/continual_grpo.py continual GRPO reward, memory update, KL scheduler
+src/gui-aif/src/open_r1/memory/           grounding memory schema, retrieval, reward
+src/gui-aif/src/open_r1/trainer/          GRPO trainer
+src/gui-aif/tests/test_memory.py          memory and anchor reward tests
+```
 
 ## Installation
 
 ```bash
-conda create -n gui-aif python=3.12
-conda activate gui-aif
+conda create -n acr-gui python=3.12
+conda activate acr-gui
 bash setup.sh
+pip install deepspeed==0.15.4 filelock qwen_vl_utils
 ```
 
-then install the dependencies:
+Install the model/runtime dependencies required by your Qwen2.5-VL and DeepSpeed environment as needed.
 
-```bash
-pip install deepspeed==0.15.4
-pip install filelock
-pip install qwen_vl_utils
+## Data Format
+
+Training samples should contain at least:
+
+```json
+{
+  "image_path": "/path/to/screenshot.png",
+  "instruction": "tap the search button",
+  "abs_box": [1122, 18, 1206, 48],
+  "width": 1920,
+  "height": 1080,
+  "domain": "mobile"
+}
 ```
 
-## Start
+ACR-GUI can also consume normalized boxes through `rela_box`, `rel_box`, `normalized_box`, or normalized `bbox`.
 
-Train GUI-G<sup>2</sup>-style GRPO on your own data:
+Optional context fields:
 
-```bash
-cd gui-aif
-bash run_grpo.sh
+```text
+context_text, target_text, text, label, name, title
+element_type, ui_type, widget_type, component_type, control_type, type, category
+domain, source, dataset
 ```
 
-Train the continual ACR-GUI reward:
+Dataset YAML example:
+
+```yaml
+datasets:
+  - name: mobile
+    domain: mobile
+    json_path: /path/to/mobile_train.json
+    sampling_strategy: all
+```
+
+## Training
+
+Train with old memory and write updated memory after training:
 
 ```bash
 CKPT_PATH=/path/to/Qwen2.5-VL \
 DATA_PATH=/path/to/domain_stream.yaml \
-ACR_ENABLED=true \
-MEMORY_JSONL=/path/to/memory.jsonl \
-MEMORY_NPY=/path/to/memory.npy \
+MEMORY_JSONL=/path/to/old_memory.jsonl \
+MEMORY_NPY=/path/to/old_memory.npy \
+MEMORY_WRITE_JSONL=/path/to/updated_memory.jsonl \
+MEMORY_WRITE_NPY=/path/to/updated_memory.npy \
 bash run_continual.sh
 ```
 
-You should configure:
+If `MEMORY_JSONL` and `MEMORY_NPY` are not provided, training still runs, but the ACR reward has no old anchors to retrieve. If write paths are not provided, updated memory is saved under the training output directory.
 
-* `DATA_PATH` : Path to your dataset YAML config, where sequentially set the GUI dataset required to train
-* `CKPT_PATH` : Model checkpoint path
-* `LOG_DIR` , `SAVE_PATH` : Output folders
-* `ACR_ENABLED` : Enable anchor-collapse regularization in continual GRPO
-* `MEMORY_JSONL`, `MEMORY_NPY` : Continual grounding memory metadata and embedding matrix
-* `LAMBDA_ACR` : Weight of the gated historical anchor reward
-
-Training data should follow the JSONL format demonstrated in:
+Useful environment variables:
 
 ```text
-example_training_json.json
+CKPT_PATH              base model path
+DATA_PATH              dataset YAML
+SAVE_PATH              training output directory
+ACR_ENABLED            enable ACR reward, default true
+MEMORY_JSONL           old memory metadata
+MEMORY_NPY             old memory embeddings
+MEMORY_WRITE_ENABLED   write current anchors after training, default true
+MEMORY_WRITE_JSONL     updated memory metadata output
+MEMORY_WRITE_NPY       updated memory embeddings output
+LAMBDA_ACR             anchor reward weight
 ```
 
-To evaluate:
+## Verification
+
+Syntax check:
 
 ```bash
-run screenspotpro_test.py
+cd src/gui-aif
+python -m py_compile \
+  src/open_r1/continual_grpo.py \
+  src/open_r1/trainer/grpo_trainer.py \
+  src/open_r1/memory/schema.py \
+  src/open_r1/memory/grounding_memory.py \
+  src/open_r1/memory/reward.py
 ```
 
-You should configure:
-* `Qwen_path` : Your trained model path
-* `Screenspot_imgs` : ScreenSpot-Pro images path
-* `Screenspot_test` : ScreenSpot-Pro annotations path
+Memory tests:
 
-For other benchmarks evaluation, you can modedify this code.
-
-## Acknowledgement
-
-The code is built from [GUI-G<sup>2</sup>](https://github.com/zju-real/GUI-G2).
-
-## Citation
-
-If you use GUI-AiF, please cite our work:
-
-```bibtex
-@misc{liu2026continualguiagents,
-      title={Continual GUI Agents}, 
-      author={Ziwei Liu and Borui Kang and Hangjie Yuan and Zixiang Zhao and Wei Li and Yifan Zhu and Tao Feng},
-      year={2026},
-      eprint={2601.20732},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2601.20732}, 
-}
+```bash
+cd src/gui-aif
+PYTHONPATH=src python -m pytest tests/test_memory.py
 ```
-
-If you like our project, please give us a star ⭐ on GitHub.
