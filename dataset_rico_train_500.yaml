@@ -1,0 +1,2 @@
+datasets:
+  - json_path: /Users/user68/Desktop/file/GUI-Agent/gui_data_process/processed/rico_widget_test/train_500.jsonl
